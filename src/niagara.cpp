@@ -23,6 +23,10 @@
 #include <cgltf.h>
 #include <meshoptimizer.h>
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 bool meshShadingEnabled = true;
 bool cullingEnabled = true;
 bool lodEnabled = true;
@@ -1359,6 +1363,29 @@ int main(int argc, const char** argv)
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
+	// Setup Dear ImGui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGui_ImplGlfw_InitForVulkan(window, true);
+	ImGui_ImplVulkan_InitInfo guiInfo = {};
+	guiInfo.Instance = instance;
+	guiInfo.PhysicalDevice = physicalDevice;
+	guiInfo.Device = device;
+	guiInfo.Queue = queue;
+	guiInfo.DescriptorPoolSize = 1;
+	guiInfo.MinImageCount = 2;
+	guiInfo.ImageCount = 2;
+	guiInfo.UseDynamicRendering = true;
+	guiInfo.PipelineRenderingCreateInfo = renderingInfo;
+	ImGui_ImplVulkan_Init(&guiInfo);
+
+	float windowScale = 1.f;
+	glfwGetWindowContentScale(window, &windowScale, 0);
+
+	ImFontConfig fontConfig;
+	fontConfig.RasterizerDensity = windowScale;
+	ImGui::GetIO().Fonts->AddFontFromFileTTF("extern/imgui/misc/fonts/Roboto-Medium.ttf", 15.0f, &fontConfig);
+
 	Buffer scratch = {};
 	createBuffer(scratch, device, memoryProperties, 128 * 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -1381,7 +1408,7 @@ int main(int argc, const char** argv)
 		const char* ext = strrchr(argv[1], '.');
 		if (ext && (strcmp(ext, ".gltf") == 0 || strcmp(ext, ".glb") == 0))
 		{
-			if (!loadScene(geometry, draws, texturePaths, camera, sunDirection, argv[1], meshShadingSupported, fastMode))
+			if (!loadScene(geometry, draws, texturePaths, camera, sunDirection, argv[1], meshShadingSupported || true, fastMode))
 			{
 				printf("Error: scene %s failed to load\n", argv[1]);
 				return 1;
@@ -1445,6 +1472,10 @@ int main(int argc, const char** argv)
 		printf("Error: no meshes loaded!\n");
 		return 1;
 	}
+
+	// pad meshlets to 64 to allow shaders to over-read when running task shaders
+	while (geometry.meshlets.size() % 64)
+		geometry.meshlets.push_back(Meshlet());
 
 	if (draws.empty())
 	{
@@ -1598,6 +1629,10 @@ int main(int argc, const char** argv)
 		double frameCpuBegin = glfwGetTime() * 1000;
 
 		glfwPollEvents();
+
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
 
 		SwapchainStatus swapchainStatus = updateSwapchain(swapchain, physicalDevice, device, surface, familyIndex, window, swapchainFormat);
 
@@ -2076,6 +2111,58 @@ int main(int argc, const char** argv)
 			vkCmdDispatch(commandBuffer, getGroupCount(swapchain.width, blitCS.localSizeX), getGroupCount(swapchain.height, blitCS.localSizeY), 1);
 		}
 
+		bool guiEnabled = true;
+
+		if (guiEnabled)
+		{
+			VkImageMemoryBarrier2 guiBarrier = imageBarrier(swapchain.images[imageIndex],
+			    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+			    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+
+			pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 1, &guiBarrier);
+
+			VkRenderingAttachmentInfo colorAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+			colorAttachment.imageView = swapchainImageViews[imageIndex];
+			colorAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+			colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+			VkRenderingInfo passInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+			passInfo.renderArea.extent.width = swapchain.width;
+			passInfo.renderArea.extent.height = swapchain.height;
+			passInfo.layerCount = 1;
+			passInfo.colorAttachmentCount = 1;
+			passInfo.pColorAttachments = &colorAttachment;
+
+			vkCmdBeginRendering(commandBuffer, &passInfo);
+
+			if (ImGui::Begin("niagara"))
+			{
+				ImGui::SeparatorText("General");
+				ImGui::Checkbox("Mesh shading", &meshShadingEnabled);
+				ImGui::Checkbox("Frustum culling", &cullingEnabled);
+				ImGui::Checkbox("Occlusion culling", &occlusionEnabled);
+				ImGui::Checkbox("Cluster occlusion culling", &clusterOcclusionEnabled);
+				ImGui::Checkbox("Task shading", &taskShadingEnabled);
+				ImGui::Checkbox("Level of detail", &lodEnabled);
+				ImGui::SliderInt("LOD bias", &debugLodStep, 0, 9);
+				ImGui::Checkbox("Raytracing shadows", &shadowsEnabled);
+			}
+			ImGui::End();
+
+			ImGui::ShowDemoWindow(); // Show demo window! :)
+			ImGui::Render();
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer, VK_NULL_HANDLE);
+
+			vkCmdEndRendering(commandBuffer);
+
+			VkImageMemoryBarrier2 endBarrier = imageBarrier(swapchain.images[imageIndex],
+			    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+			    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+
+			pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 1, &endBarrier);
+		}
+
 		VkImageMemoryBarrier2 presentBarrier = imageBarrier(swapchain.images[imageIndex],
 		    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
 		    0, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -2151,6 +2238,10 @@ int main(int argc, const char** argv)
 	}
 
 	VK_CHECK(vkDeviceWaitIdle(device));
+
+	ImGui_ImplVulkan_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
 
 	vkDestroyDescriptorPool(device, textureSet.first, 0);
 

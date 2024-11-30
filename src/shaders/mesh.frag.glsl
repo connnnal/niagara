@@ -69,6 +69,10 @@ void main()
 	if (meshDraw.emissiveTexture > 0)
 		emissive = texture(SAMP(meshDraw.emissiveTexture), uv).rgb;
 
+	vec4 specgloss = vec4(0.0f);
+	if (meshDraw.specularTexture > 0)
+		specgloss = texture(SAMP(meshDraw.specularTexture), uv);
+
 	vec3 bitangent = cross(normal, tangent.xyz) * tangent.w;
 
 	vec3 nrm = normalize(nmap.r * tangent.xyz + nmap.g * bitangent + nmap.b * normal);

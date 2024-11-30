@@ -47,12 +47,19 @@ add_subdirectory(extern/glm)
 add_subdirectory(extern/volk)
 add_subdirectory(extern/meshoptimizer)
 
+add_library(imgui STATIC extern/imgui/imgui.cpp extern/imgui/imgui_draw.cpp extern/imgui/imgui_widgets.cpp extern/imgui/imgui_tables.cpp extern/imgui/imgui_demo.cpp extern/imgui/backends/imgui_impl_vulkan.cpp extern/imgui/backends/imgui_impl_glfw.cpp)
+target_include_directories(imgui PUBLIC extern/imgui extern/imgui/backends)
+set_target_properties(imgui PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+target_compile_definitions(imgui PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
+target_link_libraries(imgui PRIVATE volk glfw)
+
 target_link_libraries(niagara
   PRIVATE
     glfw
     glm::glm
     volk
-    meshoptimizer)
+    meshoptimizer
+    imgui)
 
 if(UNIX)
   if(DEFINED ENV{VULKAN_SDK})
